@@ -42,7 +42,9 @@ static GMutex xfer_queue_mutex;
 static GHashTable *xfer_complete;
 static GMutex xfer_complete_mutex;
 static GCond xfer_complete_cond;
+static GMutex connected_mutex;
 static gboolean connected = FALSE;
+static struct afb_event status_event;
 
 #define PBAP_UUID	"0000112f-0000-1000-8000-00805f9b34fb"
 
@@ -425,6 +427,49 @@ static void search(struct afb_req request)
 	afb_req_success(request, response, NULL);
 }
 
+static void status(struct afb_req request)
+{
+	struct json_object *response, *status;
+
+	response = json_object_new_object();
+	g_mutex_lock(&connected_mutex);
+	status = json_object_new_boolean(connected);
+	g_mutex_unlock(&connected_mutex);
+	json_object_object_add(response, "connected", status);
+
+	afb_req_success(request, response, NULL);
+}
+
+static void subscribe(struct afb_req request)
+{
+	const char *value = afb_req_value(request, "value");
+	if (value) {
+		if (!g_strcmp0(value, "status")) {
+			afb_req_subscribe(request, status_event);
+		} else {
+			afb_req_fail(request, "failed", "Invalid event");
+			return;
+		}
+	}
+
+	afb_req_success(request, NULL, NULL);
+}
+
+static void unsubscribe(struct afb_req request)
+{
+	const char *value = afb_req_value(request, "value");
+	if (value) {
+		if (!g_strcmp0(value, "status")) {
+			afb_req_unsubscribe(request, status_event);
+		} else {
+			afb_req_fail(request, "failed", "Invalid event");
+			return;
+		}
+	}
+
+	afb_req_success(request, NULL, NULL);
+}
+
 static gboolean init_session(const gchar *address)
 {
 	GVariant *args;
@@ -491,8 +536,15 @@ static gboolean is_pbap_dev_and_init(struct json_object *dev)
 	json_object_object_get_ex(dev, "HFPConnected", &hfp_connected);
 	if (!g_strcmp0(json_object_get_string(hfp_connected), "True")) {
 		if (init_session(json_object_get_string(address))) {
-			AFB_NOTICE("PBAP device connected: %s", json_object_get_string(address));
+			struct json_object *event, *status;
+			event = json_object_new_object();
+			g_mutex_lock(&connected_mutex);
 			connected = TRUE;
+			status = json_object_new_boolean(connected);
+			g_mutex_unlock(&connected_mutex);
+			json_object_object_add(event, "connected", status);
+			afb_event_push(status_event, event);
+			AFB_NOTICE("PBAP device connected: %s", json_object_get_string(address));
 		}
 	}
 
@@ -545,6 +597,9 @@ static const struct afb_verb_v2 binding_verbs[] = {
 	{ .verb = "entry",	.callback = entry,		.info = "List call entry" },
 	{ .verb = "history",	.callback = history,		.info = "List call history" },
 	{ .verb = "search",	.callback = search,		.info = "Search for entry" },
+	{ .verb = "status",	.callback = status,		.info = "Get status" },
+	{ .verb = "subscribe",	.callback = subscribe,		.info = "Subscribe to events" },
+	{ .verb = "unsubscribe",.callback = unsubscribe,	.info = "Unsubscribe to events" },
 	{ }
 };
 
@@ -562,6 +617,8 @@ static int init()
 
 	pthread_t tid;
 	int ret = 0;
+
+	status_event = afb_daemon_make_event("status");
 
 	ret = afb_daemon_require_api("Bluetooth-Manager", 1);
 	if (ret) {
@@ -590,10 +647,17 @@ static void process_connection_event(struct json_object *object)
 		afb_service_call("Bluetooth-Manager", "discovery_result",
 				 args, discovery_result_cb, &response);
 	} else if (!g_strcmp0(status, "disconnected")) {
+		struct json_object *event, *status;
+		event = json_object_new_object();
+		g_mutex_lock(&connected_mutex);
+		connected = FALSE;
+		status = json_object_new_boolean(connected);
+		g_mutex_unlock(&connected_mutex);
+		json_object_object_add(event, "connected", status);
+		afb_event_push(status_event, event);
 		json_object_object_get_ex(object, "Address", &address_obj);
 		address = json_object_get_string(address_obj);
 		AFB_NOTICE("PBAP device disconnected: %s", address);
-		connected = FALSE;
 	} else
 		AFB_ERROR("Unsupported connection status: %s\n", status);
 }
