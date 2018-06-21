@@ -443,16 +443,26 @@ static void status(struct afb_req request)
 static void subscribe(struct afb_req request)
 {
 	const char *value = afb_req_value(request, "value");
-	if (value) {
-		if (!g_strcmp0(value, "status")) {
-			afb_req_subscribe(request, status_event);
-		} else {
-			afb_req_fail(request, "failed", "Invalid event");
-			return;
-		}
+
+	if (!value) {
+		afb_req_fail(request, "failed", "No event");
+		return;
 	}
 
-	afb_req_success(request, NULL, NULL);
+	if (!g_strcmp0(value, "status")) {
+		afb_req_subscribe(request, status_event);
+		afb_req_success(request, NULL, NULL);
+
+		struct json_object *event, *status;
+		event = json_object_new_object();
+		g_mutex_lock(&connected_mutex);
+		status = json_object_new_boolean(connected);
+		g_mutex_unlock(&connected_mutex);
+		json_object_object_add(event, "connected", status);
+		afb_event_push(status_event, event);
+	} else {
+		afb_req_fail(request, "failed", "Invalid event");
+	}
 }
 
 static void unsubscribe(struct afb_req request)
