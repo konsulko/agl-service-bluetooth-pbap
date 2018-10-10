@@ -24,7 +24,7 @@
 #include <sys/time.h>
 #include <time.h>
 
-#define AFB_BINDING_VERSION 2
+#define AFB_BINDING_VERSION 3
 #include <afb/afb-binding.h>
 
 #include "obex_client1_interface.h"
@@ -44,7 +44,7 @@ static GMutex xfer_complete_mutex;
 static GCond xfer_complete_cond;
 static GMutex connected_mutex;
 static gboolean connected = FALSE;
-static struct afb_event status_event;
+static afb_event_t status_event;
 
 #define PBAP_UUID	"0000112f-0000-1000-8000-00805f9b34fb"
 
@@ -228,7 +228,7 @@ static json_object *get_vcards(int max_entries)
 	return vcards;
 }
 
-static gboolean parse_list_parameter(struct afb_req request, gchar **list)
+static gboolean parse_list_parameter(afb_req_t request, gchar **list)
 {
 	struct json_object *list_obj, *query;
 	const gchar *list_str;
@@ -262,7 +262,7 @@ static gboolean parse_list_parameter(struct afb_req request, gchar **list)
 	return TRUE;
 }
 
-static gboolean parse_max_entries_parameter(struct afb_req request, int *max_entries)
+static gboolean parse_max_entries_parameter(afb_req_t request, int *max_entries)
 {
 	struct json_object *max_obj, *query;
 
@@ -284,7 +284,7 @@ static gboolean parse_max_entries_parameter(struct afb_req request, int *max_ent
 	return TRUE;
 }
 
-void contacts(struct afb_req request)
+void contacts(afb_req_t request)
 {
 	struct json_object *jresp;
 	int max_entries = -1;
@@ -304,7 +304,7 @@ void contacts(struct afb_req request)
 	afb_req_success(request, jresp, "contacts");
 }
 
-void entry(struct afb_req request)
+void entry(afb_req_t request)
 {
 	struct json_object *handle_obj, *jresp, *query;
 	const gchar *handle;
@@ -339,7 +339,7 @@ void entry(struct afb_req request)
 	afb_req_success(request, jresp, "list entry");
 }
 
-void history(struct afb_req request)
+void history(afb_req_t request)
 {
 	struct json_object *jresp;
 	gchar *list = NULL;
@@ -363,7 +363,7 @@ void history(struct afb_req request)
 	afb_req_success(request, jresp, "call history");
 }
 
-static void search(struct afb_req request)
+static void search(afb_req_t request)
 {
 	struct json_object *query, *val, *results_array, *response;
 	const char *number = NULL;
@@ -427,7 +427,7 @@ static void search(struct afb_req request)
 	afb_req_success(request, response, NULL);
 }
 
-static void status(struct afb_req request)
+static void status(afb_req_t request)
 {
 	struct json_object *response, *status;
 
@@ -440,7 +440,7 @@ static void status(struct afb_req request)
 	afb_req_success(request, response, NULL);
 }
 
-static void subscribe(struct afb_req request)
+static void subscribe(afb_req_t request)
 {
 	const char *value = afb_req_value(request, "value");
 
@@ -465,7 +465,7 @@ static void subscribe(struct afb_req request)
 	}
 }
 
-static void unsubscribe(struct afb_req request)
+static void unsubscribe(afb_req_t request)
 {
 	const char *value = afb_req_value(request, "value");
 	if (value) {
@@ -561,48 +561,41 @@ static gboolean is_pbap_dev_and_init(struct json_object *dev)
 	return connected;
 }
 
-static void discovery_result_cb(void *closure, int status, struct json_object *result)
+static void discovery_result_cb(void *closure, struct json_object *result,
+				const char *error, const char *info,
+				afb_api_t api)
 {
 	enum json_type type;
-	struct json_object *devs, *dev;
+	struct json_object *dev, *tmp = NULL;
 	int i;
 
-	json_object_object_foreach(result, key, val) {
-		type = json_object_get_type(val);
-		switch (type) {
-			case json_type_array:
-				json_object_object_get_ex(result, key, &devs);
-				for (i = 0; i < json_object_array_length(devs); i++) {
-					dev = json_object_array_get_idx(devs, i);
-					if (is_pbap_dev_and_init(dev))
-						break;
-				}
-				break;
-			case json_type_string:
-			case json_type_boolean:
-			case json_type_double:
-			case json_type_int:
-			case json_type_object:
-			case json_type_null:
-			default:
-				break;
-		}
+	if (!json_object_object_get_ex(result, "list", &tmp))
+		return;
+	type = json_object_get_type(tmp);
+
+	if (type != json_type_array)
+		return;
+
+	for (i = 0; i < json_object_array_length(tmp); i++) {
+		dev = json_object_array_get_idx(tmp, i);
+		if (is_pbap_dev_and_init(dev))
+			return;
 	}
 }
 
-static void init_bt(void)
+static void init_bt(afb_api_t api)
 {
-	struct json_object *args, *response;
+	struct json_object *args;
 
 	args = json_object_new_object();
 	json_object_object_add(args , "value", json_object_new_string("connection"));
-	afb_service_call_sync("Bluetooth-Manager", "subscribe", args, &response);
+	afb_api_call_sync(api, "Bluetooth-Manager", "subscribe", args, NULL, NULL, NULL);
 
 	args = json_object_new_object();
-	afb_service_call("Bluetooth-Manager", "discovery_result", args, discovery_result_cb, &response);
+	afb_api_call(api, "Bluetooth-Manager", "discovery_result", args, discovery_result_cb, NULL);
 }
 
-static const struct afb_verb_v2 binding_verbs[] = {
+static const afb_verb_t binding_verbs[] = {
 	{ .verb = "contacts",	.callback = contacts,		.info = "List contacts" },
 	{ .verb = "entry",	.callback = entry,		.info = "List call entry" },
 	{ .verb = "history",	.callback = history,		.info = "List call history" },
@@ -621,7 +614,7 @@ static void *main_loop_thread(void *unused)
 	return NULL;
 }
 
-static int init()
+static int init(afb_api_t api)
 {
 	AFB_NOTICE("PBAP binding init");
 
@@ -639,14 +632,14 @@ static int init()
 	/* Start the main loop thread */
 	pthread_create(&tid, NULL, main_loop_thread, NULL);
 
-	init_bt();
+	init_bt(api);
 
 	return ret;
 }
 
-static void process_connection_event(struct json_object *object)
+static void process_connection_event(afb_api_t api, struct json_object *object)
 {
-	struct json_object *args, *response, *status_obj, *address_obj;
+	struct json_object *args, *status_obj, *address_obj;
 	const char *status, *address;
 
 	json_object_object_get_ex(object, "Status", &status_obj);
@@ -654,8 +647,9 @@ static void process_connection_event(struct json_object *object)
 
 	if (!g_strcmp0(status, "connected")) {
 		args = json_object_new_object();
-		afb_service_call("Bluetooth-Manager", "discovery_result",
-				 args, discovery_result_cb, &response);
+
+		afb_api_call(api, "Bluetooth-Manager", "discovery_result",
+			     args, discovery_result_cb, NULL);
 	} else if (!g_strcmp0(status, "disconnected")) {
 		struct json_object *event, *status;
 		event = json_object_new_object();
@@ -672,17 +666,16 @@ static void process_connection_event(struct json_object *object)
 		AFB_ERROR("Unsupported connection status: %s\n", status);
 }
 
-static void onevent(const char *event, struct json_object *object)
+static void onevent(afb_api_t api, const char *event, struct json_object *object)
 {
 	if (!g_strcmp0(event, "Bluetooth-Manager/connection"))
-		process_connection_event(object);
+		process_connection_event(api, object);
 	 else
 		AFB_ERROR("Unsupported event: %s\n", event);
 }
 
-const struct afb_binding_v2 afbBindingV2 = {
+const afb_binding_t afbBindingV3 = {
 	.api = "bluetooth-pbap",
-	.specification = NULL,
 	.verbs = binding_verbs,
 	.init = init,
 	.onevent = onevent,
