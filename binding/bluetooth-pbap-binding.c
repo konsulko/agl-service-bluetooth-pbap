@@ -540,25 +540,51 @@ static gboolean init_session(const gchar *address)
 
 static gboolean is_pbap_dev_and_init(struct json_object *dev)
 {
-	struct json_object *name, *address, *hfp_connected;
-	json_object_object_get_ex(dev, "Name", &name);
-	json_object_object_get_ex(dev, "Address", &address);
-	json_object_object_get_ex(dev, "HFPConnected", &hfp_connected);
-	if (!g_strcmp0(json_object_get_string(hfp_connected), "True")) {
-		if (init_session(json_object_get_string(address))) {
-			struct json_object *event, *status;
-			event = json_object_new_object();
+	struct json_object *jresp, *props = NULL, *val = NULL;
+	int i;
+
+	json_object_object_get_ex(dev, "properties", &props);
+	if (!props)
+		return FALSE;
+
+	json_object_object_get_ex(props, "connected", &val);
+	if (!val || !json_object_get_boolean(val))
+		return FALSE;
+
+	json_object_object_get_ex(props, "uuids", &val);
+	for (i = 0; i < json_object_array_length(val); i++) {
+		const char *uuid = json_object_get_string(json_object_array_get_idx(val, i));
+		const char *address = NULL;
+		struct json_object *val1 = NULL;
+
+		if (g_strcmp0(PBAP_UUID, uuid))
+			continue;
+
+		json_object_object_get_ex(props, "address", &val1);
+		address = json_object_get_string(val1);
+
+		if (!address)
+			return FALSE;
+
+		if (init_session(address)) {
+			jresp = json_object_new_object();
+
 			g_mutex_lock(&connected_mutex);
 			connected = TRUE;
-			status = json_object_new_boolean(connected);
+			json_object_object_add(jresp, "connected",
+				json_object_new_boolean(connected));
 			g_mutex_unlock(&connected_mutex);
-			json_object_object_add(event, "connected", status);
-			afb_event_push(status_event, event);
-			AFB_NOTICE("PBAP device connected: %s", json_object_get_string(address));
+
+			afb_event_push(status_event, jresp);
+
+			AFB_NOTICE("PBAP device connected: %s", address);
+
+			return TRUE;
 		}
+		break;
 	}
 
-	return connected;
+	return FALSE;
 }
 
 static void discovery_result_cb(void *closure, struct json_object *result,
@@ -566,10 +592,10 @@ static void discovery_result_cb(void *closure, struct json_object *result,
 				afb_api_t api)
 {
 	enum json_type type;
-	struct json_object *dev, *tmp = NULL;
+	struct json_object *dev, *tmp;
 	int i;
 
-	if (!json_object_object_get_ex(result, "list", &tmp))
+	if (!json_object_object_get_ex(result, "devices", &tmp))
 		return;
 	type = json_object_get_type(tmp);
 
@@ -588,11 +614,11 @@ static void init_bt(afb_api_t api)
 	struct json_object *args;
 
 	args = json_object_new_object();
-	json_object_object_add(args , "value", json_object_new_string("connection"));
+	json_object_object_add(args , "value", json_object_new_string("device_changes"));
 	afb_api_call_sync(api, "Bluetooth-Manager", "subscribe", args, NULL, NULL, NULL);
 
 	args = json_object_new_object();
-	afb_api_call(api, "Bluetooth-Manager", "discovery_result", args, discovery_result_cb, NULL);
+	afb_api_call(api, "Bluetooth-Manager", "managed_objects", args, discovery_result_cb, NULL);
 }
 
 static const afb_verb_t binding_verbs[] = {
@@ -637,38 +663,54 @@ static int init(afb_api_t api)
 	return ret;
 }
 
+
 static void process_connection_event(afb_api_t api, struct json_object *object)
 {
-	struct json_object *args, *status_obj, *address_obj;
-	const char *status, *address;
+	struct json_object *jresp, *val = NULL, *props = NULL;
+	const char *action, *address;
 
-	json_object_object_get_ex(object, "Status", &status_obj);
-	status = json_object_get_string(status_obj);
+	json_object_object_get_ex(object, "action", &val);
+	if (!val)
+		return;
+	action = json_object_get_string(val);
+	if (g_strcmp0("changed", action))
+		return;
 
-	if (!g_strcmp0(status, "connected")) {
-		args = json_object_new_object();
+	json_object_object_get_ex(object, "properties", &props);
+	if (!props)
+		return;
 
-		afb_api_call(api, "Bluetooth-Manager", "discovery_result",
+	json_object_object_get_ex(props, "connected", &val);
+	if (!val)
+		return;
+
+	if (json_object_get_boolean(val)) {
+		struct json_object *args = json_object_new_object();
+		afb_api_call(api, "Bluetooth-Manager", "managed_objects",
 			     args, discovery_result_cb, NULL);
-	} else if (!g_strcmp0(status, "disconnected")) {
-		struct json_object *event, *status;
-		event = json_object_new_object();
-		g_mutex_lock(&connected_mutex);
-		connected = FALSE;
-		status = json_object_new_boolean(connected);
-		g_mutex_unlock(&connected_mutex);
-		json_object_object_add(event, "connected", status);
-		afb_event_push(status_event, event);
-		json_object_object_get_ex(object, "Address", &address_obj);
-		address = json_object_get_string(address_obj);
-		AFB_NOTICE("PBAP device disconnected: %s", address);
-	} else
-		AFB_ERROR("Unsupported connection status: %s\n", status);
+		return;
+	}
+
+	json_object_object_get_ex(props, "address", &val);
+	if (!val)
+		return;
+
+	address = json_object_get_string(val);
+	jresp = json_object_new_object();
+
+	g_mutex_lock(&connected_mutex);
+	connected = FALSE;
+	json_object_object_add(jresp, "connected", json_object_new_boolean(connected));
+	g_mutex_unlock(&connected_mutex);
+
+	afb_event_push(status_event, jresp);
+
+	AFB_NOTICE("PBAP device disconnected: %s", address);
 }
 
 static void onevent(afb_api_t api, const char *event, struct json_object *object)
 {
-	if (!g_strcmp0(event, "Bluetooth-Manager/connection"))
+	if (!g_ascii_strcasecmp(event, "Bluetooth-Manager/device_changes"))
 		process_connection_event(api, object);
 	 else
 		AFB_ERROR("Unsupported event: %s\n", event);
