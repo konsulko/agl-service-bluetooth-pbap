@@ -21,6 +21,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -77,16 +78,24 @@ static void on_interface_proxy_properties_changed(
 	if ((filename = g_hash_table_lookup(xfer_queue, path))) {
 		g_variant_iter_init(&iter, changed_properties);
 		while (g_variant_iter_next(&iter, "{&sv}", &key, &value)) {
-			if ((!g_strcmp0(key, "Status")) &&
-					(!g_strcmp0(g_variant_get_string(value, NULL), "complete"))) {
-				g_mutex_lock(&xfer_complete_mutex);
-				g_hash_table_insert(xfer_complete, g_strdup(path), g_strdup(filename));
-				g_cond_signal(&xfer_complete_cond);
-				g_mutex_unlock(&xfer_complete_mutex);
-				g_mutex_lock(&xfer_queue_mutex);
-				g_hash_table_remove(xfer_queue, path);
-				g_mutex_unlock(&xfer_queue_mutex);
-			}
+			const gchar *val = NULL;
+
+			if (g_strcmp0(key, "Status"))
+				continue;
+
+			val = g_variant_get_string(value, NULL);
+
+			if (g_strcmp0(val, "complete") && g_strcmp0(val, "error"))
+				continue;
+
+			g_mutex_lock(&xfer_complete_mutex);
+			g_hash_table_insert(xfer_complete, g_strdup(path),
+				g_strdup(!g_strcmp0(val, "complete") ? filename : ""));
+			g_cond_signal(&xfer_complete_cond);
+			g_mutex_unlock(&xfer_complete_mutex);
+			g_mutex_lock(&xfer_queue_mutex);
+			g_hash_table_remove(xfer_queue, path);
+			g_mutex_unlock(&xfer_queue_mutex);
 		}
 	}
 }
@@ -152,6 +161,7 @@ static gchar *pull_vcard(const gchar *handle)
 	get_filename(filename);
 	org_bluez_obex_phonebook_access1_call_pull_sync(
 			phonebook, handle, filename, filter, &tpath, &properties, NULL, NULL);
+
 	g_variant_builder_unref(b);
 	g_mutex_lock(&xfer_queue_mutex);
 	g_hash_table_insert(xfer_queue, g_strdup(tpath), g_strdup(filename));
@@ -162,21 +172,26 @@ static gchar *pull_vcard(const gchar *handle)
 
 static json_object *get_vcard(const gchar *handle)
 {
-	json_object *vcard_str, *vcard;
+	json_object *vcard_str = NULL, *vcard = NULL;
 	gchar *tpath, *filename;
 
 	tpath = pull_vcard(handle);
+
 	g_mutex_lock(&xfer_complete_mutex);
 	while (!(filename = g_hash_table_lookup(xfer_complete, tpath)))
 		g_cond_wait(&xfer_complete_cond, &xfer_complete_mutex);
 
-	vcard_str = get_vcard_xfer(filename);
+	if (strlen(filename) > 0)
+		vcard_str = get_vcard_xfer(filename);
 
 	g_hash_table_remove(xfer_complete, tpath);
+	g_free(filename);
 	g_mutex_unlock(&xfer_complete_mutex);
 
-	vcard = json_object_new_object();
-	json_object_object_add(vcard, "vcard", vcard_str);
+	if (vcard_str) {
+		vcard = json_object_new_object();
+		json_object_object_add(vcard, "vcard", vcard_str);
+	}
 
 	return vcard;
 }
@@ -246,6 +261,8 @@ static gboolean parse_list_parameter(afb_req_t request, gchar **list)
 				*list = OUTGOING;
 			} else if (!g_strcmp0(list_str, MISSED)) {
 				*list = MISSED;
+			} else if (!g_strcmp0(list_str, CONTACTS)) {
+				*list = CONTACTS;
 			} else {
 				afb_req_fail(request, "invalid list", NULL);
 				return FALSE;
@@ -336,6 +353,11 @@ void entry(afb_req_t request)
 			phonebook, INTERNAL, list, NULL, NULL);
 	jresp = get_vcard(handle);
 
+	if (!jresp) {
+		afb_req_fail(request, "invalid handle", NULL);
+		return;
+	}
+
 	afb_req_success(request, jresp, "list entry");
 }
 
@@ -398,6 +420,7 @@ static void search(afb_req_t request)
 	b = g_variant_builder_new (G_VARIANT_TYPE ("a{sv}"));
 	g_variant_builder_add(b, "{sv}", "Order", g_variant_new_string("indexed"));
 	g_variant_builder_add(b, "{sv}", "Offset", g_variant_new_uint16(0));
+	g_variant_builder_add(b, "{sv}", "Format", g_variant_new_string("vcard30"));
 	if (max_entries >= 0)
 		g_variant_builder_add(b, "{sv}", "MaxCount", g_variant_new_uint16((guint16)max_entries));
 	filter = g_variant_builder_end(b);
