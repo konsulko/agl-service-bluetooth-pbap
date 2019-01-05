@@ -415,7 +415,7 @@ static void search(afb_req_t request)
 		json_object *result_obj = json_object_new_object();
 		json_object *card_str = json_object_new_string(card);
 		json_object *name_str = json_object_new_string(name);
-		json_object_object_add(result_obj, "card", card_str);
+		json_object_object_add(result_obj, "handle", card_str);
 		json_object_object_add(result_obj, "name", name_str);
 		json_object_array_add(results_array, result_obj);
 		g_free(card);
