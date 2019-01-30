@@ -39,6 +39,7 @@ static OrgBluezObexClient1 *client;
 static OrgBluezObexSession1 *session;
 static OrgBluezObexPhonebookAccess1 *phonebook;
 static GHashTable *xfer_queue;
+static GMutex cached_mutex;
 static GMutex xfer_queue_mutex;
 static GHashTable *xfer_complete;
 static GMutex xfer_complete_mutex;
@@ -46,6 +47,8 @@ static GCond xfer_complete_cond;
 static GMutex connected_mutex;
 static gboolean connected = FALSE;
 static afb_event_t status_event;
+
+json_object *cached_results = NULL;
 
 #define PBAP_UUID	"0000112f-0000-1000-8000-00805f9b34fb"
 
@@ -314,11 +317,20 @@ void contacts(afb_req_t request)
 	if (!parse_max_entries_parameter(request, &max_entries))
 		return;
 
-	org_bluez_obex_phonebook_access1_call_select_sync(
+	g_mutex_lock(&cached_mutex);
+
+	if (max_entries == -1 && cached_results) {
+		jresp = cached_results;
+		json_object_get(jresp);
+	} else {
+		org_bluez_obex_phonebook_access1_call_select_sync(
 			phonebook, INTERNAL, CONTACTS, NULL, NULL);
-	jresp = get_vcards(max_entries);
+		jresp = get_vcards(max_entries);
+	}
 
 	afb_req_success(request, jresp, "contacts");
+
+	g_mutex_unlock(&cached_mutex);
 }
 
 void entry(afb_req_t request)
@@ -602,6 +614,17 @@ static gboolean is_pbap_dev_and_init(struct json_object *dev)
 
 			AFB_NOTICE("PBAP device connected: %s", address);
 
+			g_mutex_lock(&cached_mutex);
+
+			if (cached_results)
+				json_object_put(cached_results);
+
+			/* probably should be made async */
+			org_bluez_obex_phonebook_access1_call_select_sync(
+				phonebook, INTERNAL, CONTACTS, NULL, NULL);
+			cached_results = get_vcards(-1);
+			g_mutex_unlock(&cached_mutex);
+
 			return TRUE;
 		}
 		break;
@@ -727,6 +750,12 @@ static void process_connection_event(afb_api_t api, struct json_object *object)
 	g_mutex_unlock(&connected_mutex);
 
 	afb_event_push(status_event, jresp);
+
+	g_mutex_lock(&cached_mutex);
+	if (cached_results)
+		json_object_put(cached_results);
+	cached_results = NULL;
+	g_mutex_unlock(&cached_mutex);
 
 	AFB_NOTICE("PBAP device disconnected: %s", address);
 }
