@@ -612,7 +612,8 @@ static gboolean is_pbap_dev_and_init(struct json_object *dev)
 
 			afb_event_push(status_event, jresp);
 
-			AFB_NOTICE("PBAP device connected: %s", address);
+			json_object_object_get_ex(dev, "device", &val1);
+			AFB_NOTICE("PBAP device connected: %s", json_object_get_string(val1));
 
 			g_mutex_lock(&cached_mutex);
 
@@ -713,7 +714,7 @@ static int init(afb_api_t api)
 static void process_connection_event(afb_api_t api, struct json_object *object)
 {
 	struct json_object *jresp, *val = NULL, *props = NULL;
-	const char *action, *address;
+	const char *action, *device;
 
 	json_object_object_get_ex(object, "action", &val);
 	if (!val)
@@ -737,11 +738,11 @@ static void process_connection_event(afb_api_t api, struct json_object *object)
 		return;
 	}
 
-	json_object_object_get_ex(props, "address", &val);
+	json_object_object_get_ex(object, "device", &val);
 	if (!val)
 		return;
 
-	address = json_object_get_string(val);
+	device = json_object_get_string(val);
 	jresp = json_object_new_object();
 
 	g_mutex_lock(&connected_mutex);
@@ -757,7 +758,7 @@ static void process_connection_event(afb_api_t api, struct json_object *object)
 	cached_results = NULL;
 	g_mutex_unlock(&cached_mutex);
 
-	AFB_NOTICE("PBAP device disconnected: %s", address);
+	AFB_NOTICE("PBAP device disconnected: %s", device);
 }
 
 static void onevent(afb_api_t api, const char *event, struct json_object *object)
