@@ -46,6 +46,7 @@ static GMutex xfer_complete_mutex;
 static GCond xfer_complete_cond;
 static GMutex connected_mutex;
 static gboolean connected = FALSE;
+static gchar *connected_address = NULL;
 static afb_event_t status_event;
 
 #define PBAP_UUID	"0000112f-0000-1000-8000-00805f9b34fb"
@@ -366,7 +367,7 @@ void contacts(afb_req_t request)
 	if (!parse_max_entries_parameter(request, &max_entries))
 		return;
 
-	if (max_entries == -1 && !read_cached_value("default", &cached)) {
+	if (max_entries == -1 && !read_cached_value(connected_address, &cached)) {
 		jresp = json_tokener_parse(cached);
 	} else {
 		org_bluez_obex_phonebook_access1_call_select_sync(
@@ -649,6 +650,10 @@ static gboolean is_pbap_dev_and_init(struct json_object *dev)
 			jresp = json_object_new_object();
 
 			g_mutex_lock(&connected_mutex);
+			if (connected_address)
+				g_free(connected_address);
+			connected_address = g_strdup(address);
+
 			connected = TRUE;
 			json_object_object_add(jresp, "connected",
 				json_object_new_boolean(connected));
@@ -662,7 +667,7 @@ static gboolean is_pbap_dev_and_init(struct json_object *dev)
 			/* probably should be made async */
 			org_bluez_obex_phonebook_access1_call_select_sync(
 				phonebook, INTERNAL, CONTACTS, NULL, NULL);
-			update_or_insert("default",
+			update_or_insert(address,
 				json_object_to_json_string_ext(get_vcards(-1),
 				JSON_C_TO_STRING_PLAIN));
 
