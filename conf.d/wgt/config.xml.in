@@ -23,5 +23,6 @@
 
 	<feature name="urn:AGL:widget:required-api">
 		<param name="Bluetooth-Manager" value="ws" />
+		<param name="persistence" value="ws" />
 	</feature>
 </widget>
